@@ -24,6 +24,7 @@
 #include <chrono>
 #include <mutex>
 #include <condition_variable>
+#include <algorithm> 
 
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
@@ -60,19 +61,49 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 
 
+struct ACSettings
+{
+    uint64_t clickdelay = 0;
+    uint64_t holddur = 0;
+    bool isholdindef = false;
+    LONG xcord = 0;
+    LONG ycord = 0;
+    bool isexactpos = false;
+    unsigned char subkeycode = NULL;
+    unsigned char keycode = VK_F6;
+    unsigned char mousebutton = 0;
+    UINT repeatcount = 0;
+    bool infrepeat = true;
+};
+
+
+static std::wstring GetAppFolder()
+{
+    wchar_t szFileName[MAX_PATH];
+    DWORD len = GetModuleFileName(NULL, szFileName, MAX_PATH);
+    std::wstring result(szFileName, len);
+    std::wstring::size_type pos = result.find_last_of(L"\\/");
+    result.resize(pos + 1);
+    return result;
+}
+
+
+bool IsFileExist(LPCWSTR path)
+{
+    if (path == NULL)
+    {
+        return false;
+    }
+    DWORD dwAttrib = GetFileAttributes(path);
+    return (dwAttrib != INVALID_FILE_ATTRIBUTES &&
+        !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
+}
 
 
 
-
-
-
-
-
-
-
-
-
-
+#define GETMASK(index, size) ((((size_t)1 << (size)) - 1) << (index))
+#define READFROM(data, index, size) (((data) & GETMASK((index), (size))) >> (index))
+#define WRITETO(data, index, size, value) ((data) = (((data) & (~GETMASK((index), (size)))) | (((value) << (index)) & (GETMASK((index), (size))))))
 
 
 bool isCapturingHotkey = false;
@@ -96,11 +127,26 @@ bool confirm = false;
 void startBTracking(HWND hwnd);
 UINT hotkeyarr[3] = {0,VK_F6,0};
 UINT oldhotkeyarr[3] = { 0,0,0};
+HHOOK kbhook = NULL; //redundant
+
+
+std::wstring AutoExpandEnviromentVariable(std::wstring relpath)
+{
+
+    std::wstring tempbuff;
+
+
+    DWORD strlen = ExpandEnvironmentStrings(relpath.c_str(), NULL, 0);
+    tempbuff.resize(strlen);
+    ExpandEnvironmentStrings(relpath.c_str(), &tempbuff[0], strlen);
+    return tempbuff;
+}
+
 int GetKeycodetoArray(UINT vkkey, UINT scancode)
 {
     for (unsigned int a = 0; a < sizeof(hotkeyarr) / sizeof(hotkeyarr[0]); a = a + 1)
     {
-        if (vkkey == VK_MENU || vkkey == VK_CONTROL || vkkey == VK_SHIFT && a == 0)
+        if (vkkey == VK_LMENU || vkkey == VK_RMENU || vkkey == VK_LCONTROL || vkkey == VK_RSHIFT || vkkey == VK_RCONTROL || vkkey == VK_LSHIFT || vkkey == VK_LWIN || vkkey == VK_RWIN && a == 0)
         {
             hotkeyarr[a] = vkkey;
             return 1;
@@ -108,7 +154,7 @@ int GetKeycodetoArray(UINT vkkey, UINT scancode)
         if (a == 1)
         {
             hotkeyarr[a] = vkkey;
-            hotkeyarr[a + 1] = scancode;
+            hotkeyarr[a + 1] = scancode; //redundant
             //std::cout << scancode << '\n';
             return 2;
             
@@ -117,21 +163,272 @@ int GetKeycodetoArray(UINT vkkey, UINT scancode)
     return 0;
 }
 void getuserinput(); // run in seprate thread
-void autoclickfunc(int index, uint64_t timeinmilisecond, uint64_t holdinmilisec, int dx, int dy, bool isAbsolute, bool infinite, int repeat); //run in seprate thread
+void autoclickfunc(int index, uint64_t timeinmilisecond, uint64_t holdinmilisec, int dx, int dy, bool isAbsolute, bool infinite, UINT repeat); //run in seprate thread
+LRESULT CALLBACK Keyboardhook(int code, WPARAM wp, LPARAM lp)
+{
+    if (code < 0)
+    {
+        return CallNextHookEx(kbhook, code, wp, lp);
+    }
+    if (isCapturingHotkey)
+    {
+        UINT kcode = 0;
+        if (CHECK_BIT(wp, 23))
+        {
+            switch (wp)
+            {
+            case VK_SHIFT:
+            {
+                kcode = VK_RSHIFT;
+                break;
+            }
+            case VK_MENU:
+            {
+                kcode = VK_RMENU;
+                break;
+            }
+            case VK_CONTROL:
+            {
+
+                kcode = VK_RCONTROL;
+                break;
+            }
+            default:
+            {
+                kcode = wp;
+                break;
+            }
+            break;
+            }
+        }
+        else
+        {
+            switch (wp)
+            {
+            case VK_SHIFT:
+            {
+                kcode = VK_LSHIFT;
+                break;
+            }
+            case VK_MENU:
+            {
+                kcode = VK_LMENU;
+                break;
+            }
+            case VK_CONTROL:
+            {
+                kcode = VK_LCONTROL;
+                break;
+            }
+            default:
+            {
+                kcode = wp;
+                break;
+            }
+            break;
+            }
+
+        }
+        if (GetKeycodetoArray(kcode, CHECK_BYTE(lp, 15)) == 2)
+        {
+
+            confirm = true;
+            SendMessage(wndhwnd, WM_COMMAND, ID_BUTTONGETHOTKEY, FALSE);
+        }
+
+    }
+    return CallNextHookEx(NULL, code, wp, lp);
+
+}
+std::wstring ConvertKeyCodeToString(uint8_t keycode)
+{
+
+    std::wstring result;
+    switch (keycode)
+    {
+    case VK_LEFT:
+    {
+        result = L"LEFT";
+        break;
+    }
+    case VK_UP:
+    {
+        result = L"UP";
+        break;
+    }
+    case VK_RIGHT:
+    {
+        result = L"RIGHT";
+        break;
+    }
+    case VK_DOWN:
+    {
+            result = L"DOWN";
+            break;
+    }
+    case VK_LCONTROL:
+    {
+        result = L"LCTRL";
+        break;
+    }
+    case VK_LSHIFT:
+    {
+        result = L"LSHIFT";
+        break;
+    }
+    case VK_RSHIFT:
+    {
+        result = L"RSHIFT";
+        break;
+    }
+    case VK_RCONTROL:
+    {
+        result = L"RCTRL";
+        break;
+    }
+    case VK_RMENU:
+    {
+        result = L"RALT";
+        break;
+    }
+    case VK_LMENU:
+    {
+        result = L"LALT";
+        break;
+    }
+    case VK_LWIN: 
+    {
+        result = L"LWND";
+        break;
+    }
+    case VK_RWIN:
+    {
+        result = L"RWIND";
+        break;
+    }
+    case VK_APPS:
+    {
+        result = L"APPS";
+        break;
+    }
+    case VK_PRIOR:
+    {
+        result = L"PRIOR";
+        break;
+    }
+    case VK_NEXT:
+    {
+        result = L"NEXT";
+        break;
+    }
+    case VK_END:
+    {
+        result = L"END";
+        break;
+    }
+    case VK_HOME:
+    {
+        result = L"HOME";
+        break;
+    }
+    case VK_INSERT:
+    {
+        result = L"INSERT";
+        break;
+    }
+    case VK_DELETE:
+    {
+        result = L"DELETE";
+        break;
+    }
+    case VK_DIVIDE:
+    {
+        result = L"DIVIDE";
+        break;
+    }
+    case VK_NUMLOCK:
+    {
+        result = L"NUMLOCK";
+        break;
+    }
+    default:
+    {
+        HKL kbly = LoadKeyboardLayout(L"", KLF_ACTIVATE);
+        
+        wchar_t bufferstring[256] = L"";
+        UINT scancd = MapVirtualKeyEx((UINT)keycode, 0, kbly);
+        
+        GetKeyNameText(scancd << 16, bufferstring, sizeof(bufferstring) / 2);
+        result = bufferstring;
+        break;
+    }
+    }
+    std::transform(result.begin(), result.end(), result.begin(), std::toupper);
+    return result;
+
+}
+
+bool GetSettings(std::wstring settingpath, ACSettings* acsptr)
+{
+    
 
 
+    std::wstring buff = AutoExpandEnviromentVariable(settingpath);
+    ACSettings acs;
+    acsptr->clickdelay = GetPrivateProfileInt(L"ACSettings", L"ClickDelay", 100, buff.c_str());
+    acsptr->holddur = GetPrivateProfileInt(L"ACSettings", L"HoldDuration", 10, buff.c_str());
+    acsptr->infrepeat = GetPrivateProfileInt(L"ACSettings", L"InfiniteRepeat", 1, buff.c_str());
+    acsptr->isexactpos = GetPrivateProfileInt(L"ACSettings", L"ExactPosition", 0, buff.c_str());
+    acsptr->xcord = GetPrivateProfileInt(L"ACSettings", L"Xcoordinate", 0, buff.c_str());
+    acsptr->ycord = GetPrivateProfileInt(L"ACSettings", L"YCoordinate", 0, buff.c_str());
+    acsptr->isholdindef = GetPrivateProfileInt(L"ACSettings", L"HoldIndefinetly", 0, buff.c_str());
+    acsptr->subkeycode = GetPrivateProfileInt(L"ACSettings", L"subkeycode", 0, buff.c_str());
+    acsptr->keycode = GetPrivateProfileInt(L"ACSettings", L"keycode", VK_F6, buff.c_str());
+    acsptr->repeatcount = GetPrivateProfileInt(L"ACSettings", L"RepeatCount", 1, buff.c_str());
+    acsptr->mousebutton = GetPrivateProfileInt(L"ACSettings", L"MouseButton", 0, buff.c_str());
+    return 1;
+}
+
+void WriteSettings(std::wstring path, ACSettings* acsptr)
+{
+    HANDLE hfile = nullptr;
+    std::wstring buff = AutoExpandEnviromentVariable(path);
+    if (!IsFileExist(path.c_str()))
+    {
+        hfile = CreateFile(buff.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        CloseHandle(hfile);
+        int awadw = GetLastError();
+    }
+    WritePrivateProfileString(L"ACSettings", L"ClickDelay", std::to_wstring(acsptr->clickdelay).c_str(), buff.c_str());
+    WritePrivateProfileString(L"ACSettings", L"HoldDuration", std::to_wstring(acsptr->holddur).c_str(), buff.c_str());
+    WritePrivateProfileString(L"ACSettings", L"InfiniteRepeat", std::to_wstring(acsptr->infrepeat).c_str(), buff.c_str());
+    WritePrivateProfileString(L"ACSettings", L"ExactPosition", std::to_wstring(acsptr->isexactpos).c_str(), buff.c_str());
+    WritePrivateProfileString(L"ACSettings", L"Xcoordinate", std::to_wstring(acsptr->xcord).c_str(), buff.c_str());
+    WritePrivateProfileString(L"ACSettings", L"YCoordinate", std::to_wstring(acsptr->ycord).c_str(), buff.c_str());
+    WritePrivateProfileString(L"ACSettings", L"HoldIndefinetly", std::to_wstring(acsptr->isholdindef).c_str(), buff.c_str());
+    WritePrivateProfileString(L"ACSettings", L"subkeycode", std::to_wstring(acsptr->subkeycode).c_str(), buff.c_str());
+    WritePrivateProfileString(L"ACSettings", L"keycode", std::to_wstring(acsptr->keycode).c_str(), buff.c_str());
+    WritePrivateProfileString(L"ACSettings", L"RepeatCount", std::to_wstring(acsptr->repeatcount).c_str(), buff.c_str());
+    WritePrivateProfileString(L"ACSettings", L"MouseButton", std::to_wstring(acsptr->mousebutton).c_str(), buff.c_str());
+    int aa = GetLastError();
+
+}
 
 
+ACSettings acstt;
 
 int WINAPI wWinMain(_In_ HINSTANCE hInstance,_In_opt_ HINSTANCE hPrevInstance,
     _In_ PWSTR lpCmdLine,_In_ int nCmdShow)
 {
+    
     /*
     AllocConsole();
     freopen("CONIN$", "r", stdin);
     freopen("CONOUT$", "w", stdout);
     freopen("CONOUT$", "w", stderr);
     */
+    
+    SetEnvironmentVariable(L"curdir", GetAppFolder().c_str());
     masterswitch = true;
     std::thread(getuserinput).detach();
     
@@ -180,9 +477,11 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         HWND intervalGroupBox = CreateWindowW(L"Button", L"Click inerval", BS_GROUPBOX | WS_CHILD | WS_VISIBLE , 10, 10, 466, 53, hwnd, NULL, hinst, NULL);
         SendMessageW(intervalGroupBox, WM_SETFONT, (WPARAM)hf, TRUE);
+
         HWND EditHour = CreateWindowW(L"Edit", L"0", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER | WS_TABSTOP, 20, 33, 49, 20, hwnd, (HMENU)ID_EDITINTERHOUR, hinst, NULL);
         SetWindowTheme(EditHour, L"Explorer", NULL);
         SendMessageW(EditHour, WM_SETFONT, (WPARAM)hf, TRUE);
+
         HWND TextHour = CreateWindowW(L"Static", L"Hours", WS_CHILD | WS_VISIBLE, 64, 25, 34, 16, intervalGroupBox, NULL, hinst, NULL);
         SendMessageW(TextHour, WM_SETFONT, (WPARAM)hf, TRUE);
 
@@ -198,6 +497,7 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         SendMessageW(TextSecond, WM_SETFONT, (WPARAM)hf, TRUE);
         HWND Editmilisecond = CreateWindowW(L"Edit", L"100", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER | WS_TABSTOP, 343, 33, 49, 20, hwnd, (HMENU)ID_EDITINTERMILISEC, hinst, NULL);
         SetWindowTheme(Editmilisecond, L"Explorer", NULL);
+
         SendMessageW(Editmilisecond, WM_SETFONT, (WPARAM)hf, TRUE);
         HWND Textmilisecond  = CreateWindowW(L"Static", L"Miliseconds", WS_CHILD | WS_VISIBLE, 387, 25, 69, 16, intervalGroupBox, NULL, hinst, NULL);
         SendMessageW(Textmilisecond, WM_SETFONT, (WPARAM)hf, TRUE);
@@ -251,7 +551,7 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         SendMessageW(clickposGroupbox, WM_SETFONT, (WPARAM)hf, TRUE);
         HWND SetHotkey = CreateWindowW(L"Button", L"Get hotkey", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 20, 265, 70, 20, hwnd,(HMENU) ID_BUTTONGETHOTKEY, hinst, NULL);
         SendMessageW(SetHotkey, WM_SETFONT, (WPARAM)hf, TRUE);
-        HWND sethotkeybox = CreateWindowW(L"Edit", L"F6", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_READONLY , 85, 106, 56, 20, Optionsgroupbox, (HMENU)ID_SETHOTKEYBOX, hinst, NULL);
+        HWND sethotkeybox = CreateWindowW(L"Edit", L"F6", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_READONLY , 85, 106, 82, 20, Optionsgroupbox, (HMENU)ID_SETHOTKEYBOX, hinst, NULL);
         SendMessageW(sethotkeybox, WM_SETFONT, (WPARAM)hf, TRUE);
         HWND RadiobuttonCustomMousePos = CreateWindowW(L"Button", L"", WS_GROUP | WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_TABSTOP,194+ 10, 159+23, 16, 20, hwnd, (HMENU)ID_RADIOBUTTONCUSTOMMOUSEPOS, hinst, NULL);
         SendMessageW(RadiobuttonCustomMousePos, WM_SETFONT, (WPARAM)hf, TRUE);
@@ -275,43 +575,81 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         CreateMyTooltip(hwnd);
         
         
-        
-        
-        
-        SendMessage(hwndTT, TTM_TRACKACTIVATE, (WPARAM)FALSE, (LPARAM)&ti);
-        captureuserinput = true;
-        break;
-    }
-    case WM_SYSKEYDOWN:
-    {
-        if (isCapturingHotkey)
-        {
-            
-            if (GetKeycodetoArray(wParam, CHECK_BYTE(lParam, 15)) == 2)
-            {
-                
-                confirm = true;
-                SendMessage(hwnd, WM_COMMAND, ID_BUTTONGETHOTKEY, FALSE);
-            }
 
-        }
-        break;
-    }
-
-    case WM_KEYDOWN:
-    {
         
-        if (isCapturingHotkey)
-        {
-            
-            if (GetKeycodetoArray(wParam, CHECK_BYTE(lParam, 15)) == 2)
-            {
-               
-                confirm = true;
-                SendMessage(hwnd, WM_COMMAND, ID_BUTTONGETHOTKEY, FALSE);
-            }
-        }
-        break;
+        
+        
+        GetSettings(L"%curdir%\\ACSettings.ini", &acstt);
+        uint64_t temp = acstt.clickdelay;
+        ULONG hours = temp / 3600000;
+        temp -= hours * 3600000;
+        ULONG mins = temp / 60000;
+        temp -= mins * 60000;
+        ULONG seconds = temp / 1000;
+        temp -= seconds * 1000;
+        ULONG milisec = temp;
+
+       SetWindowText(Editmilisecond, std::to_wstring(milisec).c_str());
+       SetWindowText(EditSecond, std::to_wstring(seconds).c_str());
+       SetWindowText(EditMinute, std::to_wstring(mins).c_str());
+       SetWindowText(EditHour, std::to_wstring(hours).c_str());
+
+       temp = acstt.holddur;
+       hours = temp / 3600000;
+       temp -= hours * 3600000;
+       mins = temp / 60000;
+       temp -= mins * 60000;
+       seconds = temp / 1000;
+       temp -= seconds * 1000;
+       milisec = temp;
+
+       SetWindowText(holddureditmilisecbox, std::to_wstring(milisec).c_str());
+       SetWindowText(holddureditsecbox, std::to_wstring(seconds).c_str());
+       SetWindowText(holddureditminbox, std::to_wstring(mins).c_str());
+
+       if (acstt.isholdindef)
+       {
+           SendMessage(holddurradiobttn2, BM_SETCHECK, BST_CHECKED, NULL);
+           SendMessage(holddurradiobttn1, BM_SETCHECK, BST_UNCHECKED, NULL);
+       }
+       else
+       {
+           SendMessage(holddurradiobttn1, BM_SETCHECK, BST_CHECKED, NULL);
+           SendMessage(holddurradiobttn2, BM_SETCHECK, BST_UNCHECKED, NULL);
+       }
+       if (acstt.isexactpos)
+       {
+           SendMessage(RadiobuttonCustomMousePos, BM_SETCHECK, BST_CHECKED, NULL);
+           SendMessage(RadiobuttonCUrrentMousePos, BM_SETCHECK, BST_UNCHECKED, NULL);
+       }
+
+       if (!acstt.infrepeat)
+       {
+           SendMessage(rpptuntstpdrdo, BM_SETCHECK, BST_CHECKED, NULL);
+           SendMessage(rpptuntstpdrdo, BM_SETCHECK, BST_UNCHECKED, NULL);
+       }
+       SetWindowText(EditXCord, std::to_wstring(acstt.xcord).c_str());
+       SetWindowText(EditYCord, std::to_wstring(acstt.ycord).c_str());
+       SendMessage(combobox, CB_SETCURSEL, (WPARAM)(acstt.mousebutton % 3), NULL);
+       SetWindowText(reptfrupdownbuddy, std::to_wstring(acstt.repeatcount).c_str());
+       if (!acstt.infrepeat)
+       {
+           SendMessage(reptfrdo, BM_SETCHECK, BST_CHECKED, NULL);
+       }
+       hotkeyarr[0] = acstt.subkeycode;
+       hotkeyarr[1] = acstt.keycode;
+       std::wstring result;
+       if (hotkeyarr[0])
+       {
+           result = ConvertKeyCodeToString(hotkeyarr[0]) + std::wstring(L"+");
+       }
+       if (hotkeyarr[1])
+       {
+           result = result + ConvertKeyCodeToString(hotkeyarr[1]);
+       }
+       SetWindowText(sethotkeybox, result.c_str());
+       captureuserinput = true;
+       break;
     }
     case WM_COMMAND:
     {
@@ -381,13 +719,13 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     oldhotkeyarr[i] = hotkeyarr[i];
                isCapturingHotkey = true;
                SetWindowTextW(sethotkeybox, L"Please key");
-               hotkeyarr[0] = 0;
+               //hotkeyarr[0] = 0;
                
                captureuserinput = false;
+               SetWindowsHook(WH_KEYBOARD, Keyboardhook);
                convar.notify_one();
             }
             else
-
             {
                 if (confirm)
                 {
@@ -398,90 +736,14 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     HWND sethotkeybox = GetDlgItem(optiongroupbox, ID_SETHOTKEYBOX);
                     SetWindowTextW(sethotkeybttn, L"Get Hotkey");
                     std::wstring result;
-                    if (hotkeyarr[0] == VK_SHIFT)
+                 
+                    if (hotkeyarr[0])
                     {
-                        result = result + L"SHIFT+";
+                        result = ConvertKeyCodeToString(hotkeyarr[0]) + std::wstring(L"+");
                     }
-                    else if (hotkeyarr[0] == VK_MENU)
+                    if (hotkeyarr[1])
                     {
-                        result = result + L"ALT+";
-                    }
-                    else if (hotkeyarr[0] == VK_CONTROL)
-                    {
-                        result = result + L"CTRL+";
-                    }
-                    if (hotkeyarr[1] == VK_CAPITAL)
-                    {
-                        result = result + L"CAPSLOCK";
-                      
-                    }
-                    else if (hotkeyarr[1] == VK_BACK)
-                    {
-                        result = result + L"BACKSPACE";
-                    }
-                    else if (hotkeyarr[1] == VK_TAB)
-                    {
-                        result = result + L"TAB";
-                    }
-                    else if (hotkeyarr[1] == VK_F1)
-                    {
-                        result = result + L"F1";
-                    }
-                    else if (hotkeyarr[1] == VK_F2)
-                    {
-                        result = result + L"F2";
-                    }
-                    else if (hotkeyarr[1] == VK_F3)
-                    {
-                        result = result + L"F3";
-                    }
-                    else if (hotkeyarr[1] == VK_F4)
-                    {
-                        result = result + L"F4";
-                    }
-                    else if (hotkeyarr[1] == VK_F5)
-                    {
-                        result = result + L"F5";
-                    }
-                    else if (hotkeyarr[1] == VK_F6)
-                    {
-                        result = result + L"F6";
-                    }
-                    else if (hotkeyarr[1] == VK_F7)
-                    {
-                        result = result + L"F7";
-                    }
-                    else if (hotkeyarr[1] == VK_F8)
-                    {
-                        result = result + L"F8";
-                    }
-                    else if (hotkeyarr[1] == VK_F9)
-                    {
-                        result = result + L"F9";
-                    }
-                    else if (hotkeyarr[1] == VK_F10)
-                    {
-                        result = result + L"F10";
-                    }
-                    else if (hotkeyarr[1] == VK_F11)
-                    {
-                        result = result + L"F11";
-                    }
-                    else if (hotkeyarr[1] == VK_F12)
-                    {
-                        result = result + L"F12";
-                    }
-                    else
-                    {
-                        WCHAR buffer[256] = { };
-                        BYTE keyboardstate[256] = {};
-                        if (!ToUnicode(hotkeyarr[1], hotkeyarr[2], keyboardstate, buffer, 256, 0))
-                        {
-                            MessageBoxW(hwnd, L"Error!", L"Error!", MB_OK);
-                            
-                         }
-                        result = result + buffer;
-                        
+                        result = result + ConvertKeyCodeToString(hotkeyarr[1]);
                     }
                     isCapturingHotkey = false;
                     captureuserinput = true;
@@ -489,6 +751,7 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     SetWindowTextW(sethotkeybox, result.c_str());
                     SetWindowTextW(sethotkeybttn, L"Get Hotkey");
                     confirm = false;
+                    UnhookWindowsHook(WH_KEYBOARD, Keyboardhook);
                 }
                 else
                 {
@@ -501,90 +764,13 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                         hotkeyarr[i] = oldhotkeyarr[i];
                     SetWindowTextW(sethotkeybttn, L"Get Hotkey");
                     std::wstring result;
-                    if (hotkeyarr[0] == VK_SHIFT)
+                    if (hotkeyarr[0])
                     {
-                        result = result + L"SHIFT+";
+                        result = ConvertKeyCodeToString(hotkeyarr[0]) + std::wstring(L"+");
                     }
-                    else if (hotkeyarr[0] == VK_MENU)
+                    if (hotkeyarr[1])
                     {
-                        result = result + L"ALT+";
-                    }
-                    else if (hotkeyarr[0] == VK_CONTROL)
-                    {
-                        result = result + L"CTRL+";
-                    }
-                    if (hotkeyarr[1] == VK_CAPITAL)
-                    {
-                        result = result + L"CAPSLOCK";
-
-                    }
-                    else if (hotkeyarr[1] == VK_BACK)
-                    {
-                        result = result + L"BACKSPACE";
-                    }
-                    else if (hotkeyarr[1] == VK_TAB)
-                    {
-                    result = result + L"TAB";
-                    }
-                    else if (hotkeyarr[1] == VK_F1)
-                    {
-                        result = result + L"F1";
-                    }
-                    else if (hotkeyarr[1] == VK_F2)
-                    {
-                        result = result + L"F2";
-                    }
-                    else if (hotkeyarr[1] == VK_F3)
-                    {
-                        result = result + L"F3";
-                    }
-                    else if (hotkeyarr[1] == VK_F4)
-                    {
-                        result = result + L"F4";
-                    }
-                    else if (hotkeyarr[1] == VK_F5)
-                    {
-                        result = result + L"F5";
-                    }
-                    else if (hotkeyarr[1] == VK_F6)
-                    {
-                        result = result + L"F6";
-                    }
-                    else if (hotkeyarr[1] == VK_F7)
-                    {
-                        result = result + L"F7";
-                    }
-                    else if (hotkeyarr[1] == VK_F8)
-                    {
-                        result = result + L"F8";
-                    }
-                    else if (hotkeyarr[1] == VK_F9)
-                    {
-                        result = result + L"F9";
-                    }
-                    else if (hotkeyarr[1] == VK_F10)
-                    {
-                        result = result + L"F10";
-                    }
-                    else if (hotkeyarr[1] == VK_F11)
-                    {
-                        result = result + L"F11";
-                    }
-                    else if (hotkeyarr[1] == VK_F12)
-                    {
-                        result = result + L"F12";
-                    }
-                    else
-                    {
-                    WCHAR buffer[256] = { };
-                    BYTE keyboardstate[256] = {};
-                    if (!ToUnicode(hotkeyarr[1], hotkeyarr[2], keyboardstate, buffer, 256, 0))
-                    {
-                        MessageBoxW(hwnd, L"Error!", L"Error!", MB_OK);
-                        //std::cout << hotkeyarr[1] << '\n';
-                    }
-                    result = result + buffer;
-
+                        result = result + ConvertKeyCodeToString(hotkeyarr[1]);
                     }
                     SetWindowTextW(sethotkeybox, result.c_str());
                     SetWindowTextW(sethotkeybttn, L"Get Hotkey");
@@ -592,8 +778,10 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     
                     captureuserinput = false;
                     convar.notify_one();
+                    UnhookWindowsHook(WH_KEYBOARD, Keyboardhook);
                 }
             }
+            
             SetFocus(hwnd);
             break;
         }
@@ -625,8 +813,6 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         case ID_STARTBUTTON:
         {
-            
-            
             if (!autoclickerenabled)
             {
                 SetWindowText(hwnd, L"Running - ACprj");
@@ -637,28 +823,47 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 bool temp2 = true;
                 
                 std::wstring temp2string;
-                int temp2int = 0;
+                UINT temp2int = 0;
                 int tempdx = 0;
                 int tempdy = 0;
                 if (SendMessage(GetDlgItem(hwnd, ID_RADIOBUTTONCUSTOMMOUSEPOS), BM_GETCHECK, 0, 0) == BST_CHECKED)
                 {
+                    /*
                     std::wstring buffe;
-                    GetWindowText(GetDlgItem(hwnd, ID_EDITXPOS), buffe.data(), GetWindowTextLength(GetDlgItem(hwnd, ID_EDITXPOS)) + 1);
+                    GetWindowText(GetDlgItem(hwnd, ID_EDITXPOS), &buffe[0], GetWindowTextLength(GetDlgItem(hwnd, ID_EDITXPOS)) + 1);
                     tempdx = _wtoi(buffe.c_str());
                     
                     GetWindowText(GetDlgItem(hwnd, ID_EDITYPOS), buffe.data(), GetWindowTextLength(GetDlgItem(hwnd, ID_EDITXPOS)) + 1);
                     tempdy = _wtoi(buffe.c_str());
-                    
+                    */
+                    std::wstring buff;
+                    UINT len = GetWindowTextLength(GetDlgItem(hwnd, ID_EDITXPOS)) + 1;
+                    buff.resize(len);
+                    GetWindowText(GetDlgItem(hwnd, ID_EDITXPOS), &buff[0], len);
+                    tempdx = _wtoi(buff.c_str());
+
+                    len = GetWindowTextLength(GetDlgItem(hwnd, ID_EDITYPOS)) + 1;
+                    buff.resize(len);
+                    GetWindowText(GetDlgItem(hwnd, ID_EDITYPOS), &buff[0], len);
+                    tempdy = _wtoi(buff.c_str());
+
+                    std::wstring buffe;
+                    int templen = GetWindowTextLength(GetDlgItem(hwnd, ID_EDITXPOS)) + 1;
+                    buffe.resize(templen);
+                    GetWindowText(GetDlgItem(hwnd, ID_EDITXPOS), &buffe[0], templen);
+                     templen = GetWindowTextLength(GetDlgItem(hwnd, ID_EDITYPOS)) + 1;
+                    buffe.resize(templen);
+                    GetWindowText(GetDlgItem(hwnd, ID_EDITYPOS), &buffe[0], templen);
                     temp1 = true;
                 }
                 int mouseindex = SendMessage(GetDlgItem(hwnd, ID_DURCOMBOBOX), CB_GETCURSEL, 0, 0);
                 if (SendMessage(GetDlgItem(hwnd, ID_REPTFORRDO), BM_GETCHECK, 0, 0) == BST_CHECKED)
                 {
                     temp2 = false;
-                    GetWindowText(GetDlgItem(hwnd, ID_REPEATFORUPDOWNBUDDY), temp2string.data(), GetWindowTextLength(GetDlgItem(hwnd, ID_REPTFORRDO)));
+                    int templen = GetWindowTextLength(GetDlgItem(hwnd, ID_REPTFORRDO)) + 1;
+                    temp2string.resize(templen);
+                    GetWindowText(GetDlgItem(hwnd, ID_REPEATFORUPDOWNBUDDY), &temp2string[0], templen);
                     temp2int = _wtoi(temp2string.c_str());
-                    
-                    
                 }
 
 
@@ -680,8 +885,7 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                         mouseinput.mi.dwExtraInfo = NULL;
                         mouseinput.mi.mouseData = 0;
                         mouseinput.mi.time = 0;
-                        SendInput(1, &mouseinput, sizeof(mouseinput));
-                        autoclickerenabled = true;
+                        
                         break;
                     }
                     case 1:
@@ -690,8 +894,7 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                         mouseinput.mi.dwExtraInfo = NULL;
                         mouseinput.mi.mouseData = 0;
                         mouseinput.mi.time = 0;
-                        SendInput(1, &mouseinput, sizeof(mouseinput));
-                        autoclickerenabled = true;
+                        
                         break;
                     }
                     case 2:
@@ -700,13 +903,14 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                         mouseinput.mi.dwExtraInfo = NULL;
                         mouseinput.mi.mouseData = 0;
                         mouseinput.mi.time = 0;
-                        SendInput(1, &mouseinput, sizeof(mouseinput));
-                        autoclickerenabled = true;
+                        
                         break;
                     }
                     
                     break;
                     }
+                    SendInput(1, &mouseinput, sizeof(mouseinput));
+                    autoclickerenabled = true;
                 }
                 else
                 {
@@ -717,7 +921,9 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     for (unsigned int a = 2001; a < 2005; a++)
                     {
                         std::wstring buffer;
-                        GetWindowText(GetDlgItem(hwnd, a), buffer.data(), GetWindowTextLength(GetDlgItem(hwnd, a)) + 1);
+                        int templen = GetWindowTextLength(GetDlgItem(hwnd, a)) + 1;
+                        buffer.resize(templen);
+                        GetWindowText(GetDlgItem(hwnd, a), &buffer[0], templen);
                         
                         if (a == 2001) timeinmilisec = timeinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str())) * (uint64_t)60 * (uint64_t)60 * (uint64_t)1000;
                         if (a == 2002) timeinmilisec = timeinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str()))  * (uint64_t)60 * (uint64_t)1000;
@@ -727,7 +933,9 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     for (unsigned int a = 2005; a < 2008; a++)
                     {
                         std::wstring buffer;
-                        GetWindowText(GetDlgItem(hwnd, a), buffer.data(), GetWindowTextLength(GetDlgItem(hwnd, a)) + 1);
+                        int templen = GetWindowTextLength(GetDlgItem(hwnd, a)) + 1;
+                        buffer.resize(templen);
+                        GetWindowText(GetDlgItem(hwnd, a), &buffer[0], templen);
                         //holddurinmilisec = holddurinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str()));
                         if (a == 2005) holddurinmilisec = holddurinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str())) * (uint64_t)60 * (uint64_t)1000;
                         if (a== 2006) holddurinmilisec = holddurinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str())) * (uint64_t)1000;
@@ -771,10 +979,96 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
     case WM_DESTROY:
     {
+        masterswitch = false;
         PostQuitMessage(0);
         break;
     }
+
+    case WM_CLOSE:
+    {
+        masterswitch = false;
+        UnhookWindowsHook(WH_KEYBOARD, Keyboardhook);
+        uint64_t timeinmilisec = 0;
+        uint64_t holddurinmilisec = 0;
+
+        for (unsigned int a = 2001; a < 2005; a++)
+        {
+            std::wstring buffer;
+            int templen = GetWindowTextLength(GetDlgItem(hwnd, a)) + 1;
+            buffer.resize(templen);
+            GetWindowText(GetDlgItem(hwnd, a), &buffer[0], templen);
+            //should have used += here
+            if (a == 2001) timeinmilisec = timeinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str())) * (uint64_t)60 * (uint64_t)60 * (uint64_t)1000;
+            if (a == 2002) timeinmilisec = timeinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str())) * (uint64_t)60 * (uint64_t)1000;
+            if (a == 2003) timeinmilisec = timeinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str())) * (uint64_t)1000;
+            if (a == 2004) timeinmilisec = timeinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str()));
+        }
+        for (unsigned int a = 2005; a < 2008; a++)
+        {
+            std::wstring buffer;
+            int templen = GetWindowTextLength(GetDlgItem(hwnd, a)) + 1;
+            buffer.resize(templen);
+            GetWindowText(GetDlgItem(hwnd, a), &buffer[0], templen);
+            //holddurinmilisec = holddurinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str()));
+            if (a == 2005) holddurinmilisec = holddurinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str())) * (uint64_t)60 * (uint64_t)1000;
+            if (a == 2006) holddurinmilisec = holddurinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str())) * (uint64_t)1000;
+            if (a == 2007) holddurinmilisec = holddurinmilisec + (uint64_t)std::abs(_wtoi64(buffer.c_str()));
+        }
+        if ((SendMessage(GetDlgItem(hwnd, ID_RADIOBUTTONCUSTOMMOUSEPOS), BM_GETCHECK, 0, 0) == BST_CHECKED))
+        {
+            acstt.isexactpos = true;
+
+        }
+        else
+        {
+            acstt.isexactpos = false;
+        }
+
+        if (SendMessage(GetDlgItem(hwnd, ID_DURRADIOBTTN2), BM_GETCHECK, 0, 0) == BST_CHECKED)
+        {
+            acstt.isholdindef = true;
+        }
+        else
+        {
+            acstt.isholdindef = false;
+        }
+
+        if (SendMessage(GetDlgItem(hwnd, ID_REPTFORRDO), BM_GETCHECK, NULL, NULL) != BST_CHECKED)
+        {
+            acstt.infrepeat = true;
+        }
+        else
+        {
+            acstt.infrepeat = false;
+        }
+        acstt.mousebutton = SendMessage(GetDlgItem(hwnd, ID_DURCOMBOBOX), CB_GETCURSEL, 0, 0);
+        acstt.holddur = holddurinmilisec;
+        acstt.clickdelay = timeinmilisec;
+        acstt.keycode = hotkeyarr[1];
+        acstt.subkeycode = hotkeyarr[0];
+        std::wstring buffe;
+        int templen = GetWindowTextLength(GetDlgItem(hwnd, ID_EDITXPOS)) + 1;
+        buffe.resize(templen);
+        GetWindowText(GetDlgItem(hwnd, ID_EDITXPOS), &buffe[0], templen);
+        acstt.xcord = _wtoi(buffe.c_str());
+        templen = GetWindowTextLength(GetDlgItem(hwnd, ID_EDITYPOS)) + 1;
+        buffe.resize(templen);
+        GetWindowText(GetDlgItem(hwnd, ID_EDITYPOS), &buffe[0], templen);
+        acstt.ycord = _wtoi(buffe.c_str());
+        templen = GetWindowTextLength(GetDlgItem(hwnd, ID_REPEATFORUPDOWNBUDDY)) + 1;
+        buffe.resize(templen);
+        GetWindowText(GetDlgItem(hwnd, ID_REPEATFORUPDOWNBUDDY), &buffe[0], templen);
+        acstt.repeatcount = _wtoi(buffe.c_str());
+
+
+        WriteSettings(L"%curdir%\\ACSettings.ini", &acstt);
+
+
+        return DefWindowProc(hwnd, msg, wParam, lParam);
     }
+    }
+
+   
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
@@ -803,7 +1097,6 @@ void startBTracking(HWND hwnd)
     SendMessage(hwndTT, TTM_SETMAXTIPWIDTH, 0, (LPARAM)231);
     while (isTracking && masterswitch)
     {
-
         POINT pt;
         GetCursorPos(&pt);
         if (oldX == pt.x && oldY == pt.y)
@@ -812,11 +1105,11 @@ void startBTracking(HWND hwnd)
         }
         else
         {
-            WCHAR coords[12];
-            swprintf_s(coords, ARRAYSIZE(coords), L" %d, %d", pt.x, pt.y);
-            wchar_t result[50] = L"Press ESC or left mouse button to select";
-            wcscat(result, coords);
-            ti.lpszText = result;
+            
+            
+            std::wstring wstrresult = L"Press ESC or left mouse button to select";
+            wstrresult = wstrresult + std::wstring(L" ") + std::to_wstring(pt.x) +std::wstring(L", ") + std::to_wstring(pt.y);
+            ti.lpszText = const_cast<wchar_t*>(wstrresult.c_str());
             SendMessage(hwndTT, TTM_SETTOOLINFO, 0, (LPARAM)(LPTTTOOLINFO)&ti);
             SendMessage(hwndTT, TTM_TRACKPOSITION, 0, (LPARAM)MAKELONG(pt.x + 10, pt.y + 10));
             oldX = pt.x;
@@ -855,7 +1148,8 @@ void getuserinput()
         while (!captureuserinput) convar.wait(lock, []() { return captureuserinput; });
 
        
-
+        //wtf was this for
+        //This is the small delay that prevent activation of autoclicker right after the hotkey is set
         if (hotkeyarr[0])
         {
             while ((GetAsyncKeyState(hotkeyarr[0]) & (1 << 15)) != 0 && (GetAsyncKeyState(hotkeyarr[1]) & (1 << 15)) != 0)
@@ -870,9 +1164,9 @@ void getuserinput()
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         }
-
-
-        while (captureuserinput)
+        
+        //this is stupid
+        /*while (captureuserinput)
         {
             
             if (hotkeyarr[0])
@@ -913,14 +1207,57 @@ void getuserinput()
 
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
+        */
+
+        if (hotkeyarr[0])
+        {
+            while (captureuserinput) {
+                if ((GetAsyncKeyState(hotkeyarr[0]) & (1 << 15)) != 0 && (GetAsyncKeyState(hotkeyarr[1]) & (1 << 15)) != 0)
+                {
+                    if (!autoclickerenabled)
+                    {
+                        SendMessage(wndhwnd, WM_COMMAND, ID_STARTBUTTON, TRUE);
+                        break;
+                    }
+                    else
+                    {
+
+                        SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, TRUE);
+                        break;
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        }
+        else
+        {
+            while (captureuserinput) {
+                if ((GetAsyncKeyState(hotkeyarr[1]) & (1 << 15)) != 0)
+                {
+                    if (!autoclickerenabled)
+                    {
+
+                        SendMessage(wndhwnd, WM_COMMAND, ID_STARTBUTTON, TRUE);
+                        break;
+                    }
+                    else
+                    {
+
+                        SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, TRUE);
+                        break;
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        }
+
+
     }
 }
 
 
-void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec, int dx, int dy, bool isAbsolute, bool infinite, int repeat)
+void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec, int dx, int dy, bool isAbsolute, bool infinite, UINT repeat)
 {
-  
-    
     int tempint = 0;
     if (!infinite)
     {
@@ -939,19 +1276,23 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
             mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, NULL, NULL);
             std::this_thread::sleep_for(std::chrono::milliseconds(holdinmilisec));
             mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, NULL, NULL);
-            std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+            
             if (!infinite && tempint > 0)
             {
                 tempint = tempint - 1;
-                if (tempint == 0)
+                if (tempint <= 0)
                 {
-                    autoclickerenabled = false;
-                    EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGS), TRUE);
-                    EnableWindow(GetDlgItem(wndhwnd, ID_STARTBUTTON), TRUE);
-                    EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGETHOTKEY), TRUE);
-                    SetWindowText(wndhwnd, L"Stopped - ACPrj");
+                    
+                    SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+                    //SetWindowText(wndhwnd, L"Stopped - ACPrj");
                 }
             }
+            else if (!infinite)
+            {
+
+                SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
         }
     }
     else
@@ -961,19 +1302,23 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
             mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, NULL, NULL);
             std::this_thread::sleep_for(std::chrono::milliseconds(holdinmilisec));
             mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, NULL, NULL);
-            std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+            //std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
             if (!infinite && tempint > 0)
             {
                 tempint = tempint - 1;
-                if (tempint == 0)
+                if (tempint <= 0)
                 {
-                    autoclickerenabled = false;
-                    EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGS), TRUE);
-                    EnableWindow(GetDlgItem(wndhwnd, ID_STARTBUTTON), TRUE);
-                    EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGETHOTKEY), TRUE);
-                    SetWindowText(wndhwnd, L"Stopped - ACPrj");
+                    
+                    SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+                    //SetWindowText(wndhwnd, L"Stopped - ACPrj");
                 }
             }
+            else if (!infinite)
+            {
+
+                SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
         }
     }
     break;
@@ -988,19 +1333,23 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
                 mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, NULL, NULL);
                 std::this_thread::sleep_for(std::chrono::milliseconds(holdinmilisec));
                 mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, NULL, NULL);
-                std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+                //std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
                 if (!infinite && tempint > 0)
                 {
                     tempint = tempint - 1;
-                    if (tempint == 0)
+                    if (tempint <= 0)
                     {
-                        autoclickerenabled = false;
-                        EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGS), TRUE);
-                        EnableWindow(GetDlgItem(wndhwnd, ID_STARTBUTTON), TRUE);
-                        EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGETHOTKEY), TRUE);
-                        SetWindowText(wndhwnd, L"Stopped - ACPrj");
+                        
+                        SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+                        //SetWindowText(wndhwnd, L"Stopped - ACPrj");
                     }
                 }
+                else if (!infinite)
+                {
+                    
+                    SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
             }
         }
         else
@@ -1010,19 +1359,23 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
                 mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, NULL, NULL);
                 std::this_thread::sleep_for(std::chrono::milliseconds(holdinmilisec));
                 mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, NULL, NULL);
-                std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+                //std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
                 if (!infinite && tempint > 0)
                 {
                     tempint = tempint - 1;
-                    if (tempint == 0)
+                    if (tempint <= 0)
                     {
-                        autoclickerenabled = false;
-                        EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGS), TRUE);
-                        EnableWindow(GetDlgItem(wndhwnd, ID_STARTBUTTON), TRUE);
-                        EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGETHOTKEY), TRUE);
-                        SetWindowText(wndhwnd, L"Stopped - ACPrj");
+                        
+                        SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+                        //SetWindowText(wndhwnd, L"Stopped - ACPrj");
                     }
                 }
+                else if (!infinite)
+                {
+                    
+                    SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
             }
         }
         break;
@@ -1037,19 +1390,22 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
                 mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, NULL, NULL);
                 std::this_thread::sleep_for(std::chrono::milliseconds(holdinmilisec));
                 mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, NULL, NULL);
-                std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+                //std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
                 if (!infinite && tempint > 0)
                 {
                     tempint = tempint - 1;
-                    if (tempint == 0)
+                    if (tempint <= 0)
                     {
-                        autoclickerenabled = false;
-                        EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGS), TRUE);
-                        EnableWindow(GetDlgItem(wndhwnd, ID_STARTBUTTON), TRUE);
-                        EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGETHOTKEY), TRUE);
-                        SetWindowText(wndhwnd, L"Stopped - ACPrj");
+                        SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+                        //SetWindowText(wndhwnd, L"Stopped - ACPrj");
                     }
                 }
+                else if (!infinite)
+                {
+                    
+                    SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
             }
         }
         else
@@ -1063,16 +1419,20 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
                 if (!infinite && tempint > 0)
                 {
                     tempint = tempint - 1;
-                    if (tempint == 0)
+                    if (tempint <= 0)
                     {
-                        autoclickerenabled = false;
-                        EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGS), TRUE);
-                        EnableWindow(GetDlgItem(wndhwnd, ID_STARTBUTTON), TRUE);
-                        EnableWindow(GetDlgItem(wndhwnd, ID_BUTTONGETHOTKEY), TRUE);
-                        SetWindowText(wndhwnd, L"Stopped - ACPrj");
+                        
+                        SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+                        //SetWindowText(wndhwnd, L"Stopped - ACPrj");
                         
                     }
                 }
+                else if (!infinite)
+                {
+                    
+                    SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
             }
         }
     }
