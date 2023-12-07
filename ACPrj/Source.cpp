@@ -59,8 +59,8 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #define ID_STARTBUTTON 2020
 #define ID_STOPBUTTON 2021
 
-
-
+std::condition_variable acconva;
+std::mutex mtx;
 struct ACSettings
 {
     uint64_t clickdelay = 0;
@@ -128,7 +128,7 @@ void startBTracking(HWND hwnd);
 UINT hotkeyarr[3] = {0,VK_F6,0};
 UINT oldhotkeyarr[3] = { 0,0,0};
 HHOOK kbhook = NULL; //redundant
-
+//std::thread gacthread;
 
 std::wstring AutoExpandEnviromentVariable(std::wstring relpath)
 {
@@ -430,7 +430,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,_In_opt_ HINSTANCE hPrevInstance,
     
     SetEnvironmentVariable(L"curdir", GetAppFolder().c_str());
     masterswitch = true;
-    std::thread(getuserinput).detach();
+    std::thread abcc(getuserinput);
     
     
     MSG  msg;
@@ -457,6 +457,8 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,_In_opt_ HINSTANCE hPrevInstance,
         }
     }
     masterswitch = false;
+    convar.notify_all();
+    abcc.join();
     
     return (int)msg.wParam;
 }
@@ -671,6 +673,7 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if (autoclickerenabled)
             {
                 autoclickerenabled = false;
+                
                 INPUT mousedeinput;
                 mousedeinput.type = INPUT_MOUSE;
                 mousedeinput.mi.time = 0;
@@ -692,6 +695,7 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     mousedeinput.mi.dwFlags = MOUSEEVENTF_MIDDLEUP;
                     SendInput(1, &mousedeinput, sizeof(mousedeinput));
                 }
+                acconva.notify_all();
                 SetWindowText(hwnd, L"Stopped - ACprj");
             }
             if (isTracking)
@@ -719,7 +723,7 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     oldhotkeyarr[i] = hotkeyarr[i];
                isCapturingHotkey = true;
                SetWindowTextW(sethotkeybox, L"Please key");
-               //hotkeyarr[0] = 0;
+               hotkeyarr[0] = 0;
                
                captureuserinput = false;
                SetWindowsHook(WH_KEYBOARD, Keyboardhook);
@@ -947,7 +951,7 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                         if (MessageBox(hwnd, L"You are about to run autoclicker at high speed which can lead to high CPU usage. Continue?", L"Warning!", MB_YESNO) == IDYES)
                         {
                             autoclickerenabled = true;
-                            std::thread(autoclickfunc, mouseindex,timeinmilisec, holddurinmilisec, tempdx, tempdy, temp1, temp2, temp2int).detach();
+                            std::thread(autoclickfunc, mouseindex, timeinmilisec, holddurinmilisec, tempdx, tempdy, temp1, temp2, temp2int).detach();
                         }
                         else
                         {
@@ -990,7 +994,9 @@ LRESULT CALLBACK WndProc2(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         UnhookWindowsHook(WH_KEYBOARD, Keyboardhook);
         uint64_t timeinmilisec = 0;
         uint64_t holddurinmilisec = 0;
-
+       
+        SendMessage(hwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
+        
         for (unsigned int a = 2001; a < 2005; a++)
         {
             std::wstring buffer;
@@ -1116,7 +1122,8 @@ void startBTracking(HWND hwnd)
             oldY = pt.y;
         }
         
-        Sleep(10);
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
         if ((GetAsyncKeyState(VK_ESCAPE) & (1 << 15)) != 0 || (GetAsyncKeyState(VK_LBUTTON) & (1 << 15)) != 0)
         {
@@ -1211,7 +1218,7 @@ void getuserinput()
 
         if (hotkeyarr[0])
         {
-            while (captureuserinput) {
+            while (captureuserinput && masterswitch) {
                 if ((GetAsyncKeyState(hotkeyarr[0]) & (1 << 15)) != 0 && (GetAsyncKeyState(hotkeyarr[1]) & (1 << 15)) != 0)
                 {
                     if (!autoclickerenabled)
@@ -1231,7 +1238,7 @@ void getuserinput()
         }
         else
         {
-            while (captureuserinput) {
+            while (captureuserinput && masterswitch) {
                 if ((GetAsyncKeyState(hotkeyarr[1]) & (1 << 15)) != 0)
                 {
                     if (!autoclickerenabled)
@@ -1256,25 +1263,29 @@ void getuserinput()
 }
 
 
+
+
+
 void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec, int dx, int dy, bool isAbsolute, bool infinite, UINT repeat)
 {
+    
     int tempint = 0;
     if (!infinite)
     {
-       tempint = repeat;
+        tempint = repeat;
     }
-
     switch (index)
     {
     case 0:
     { 
-        if (isAbsolute)
+    if (isAbsolute)
     {
-        while (autoclickerenabled && masterswitch)
-        {
-            SetCursorPos(dx, dy);
-            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, NULL, NULL);
-            std::this_thread::sleep_for(std::chrono::milliseconds(holdinmilisec));
+            while (autoclickerenabled && masterswitch)
+            {
+                std::unique_lock<std::mutex> lock(mtx);
+                SetCursorPos(dx, dy);
+                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, NULL, NULL);
+                convar.wait_for(lock, std::chrono::milliseconds(holdinmilisec), [&] {return !autoclickerenabled; });
             mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, NULL, NULL);
             
             if (!infinite && tempint > 0)
@@ -1292,17 +1303,18 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
 
                 SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+            convar.wait_for(lock, std::chrono::milliseconds(timeinmilisecond), [&] {return !autoclickerenabled; });
         }
     }
     else
     {
         while (autoclickerenabled && masterswitch)
         {
+            std::unique_lock<std::mutex> lock(mtx);
             mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, NULL, NULL);
-            std::this_thread::sleep_for(std::chrono::milliseconds(holdinmilisec));
+            convar.wait_for(lock, std::chrono::milliseconds(holdinmilisec), [&] {return !autoclickerenabled; });
             mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, NULL, NULL);
-            //std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+          
             if (!infinite && tempint > 0)
             {
                 tempint = tempint - 1;
@@ -1318,7 +1330,7 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
 
                 SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+            convar.wait_for(lock, std::chrono::milliseconds(timeinmilisecond), [&] {return !autoclickerenabled; });
         }
     }
     break;
@@ -1329,9 +1341,10 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
         {
             while (autoclickerenabled && masterswitch)
             {
+                std::unique_lock<std::mutex> lock(mtx);
                 SetCursorPos(dx, dy);
                 mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, NULL, NULL);
-                std::this_thread::sleep_for(std::chrono::milliseconds(holdinmilisec));
+                convar.wait_for(lock, std::chrono::milliseconds(holdinmilisec), [&] {return !autoclickerenabled; });
                 mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, NULL, NULL);
                 //std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
                 if (!infinite && tempint > 0)
@@ -1349,15 +1362,16 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
                     
                     SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+                convar.wait_for(lock, std::chrono::milliseconds(timeinmilisecond), [&] {return !autoclickerenabled; });
             }
         }
         else
         {
             while (autoclickerenabled && masterswitch)
             {
+                std::unique_lock<std::mutex> lock(mtx);
                 mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, NULL, NULL);
-                std::this_thread::sleep_for(std::chrono::milliseconds(holdinmilisec));
+                convar.wait_for(lock, std::chrono::milliseconds(holdinmilisec), [&] {return !autoclickerenabled; });
                 mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, NULL, NULL);
                 //std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
                 if (!infinite && tempint > 0)
@@ -1375,7 +1389,7 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
                     
                     SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+                convar.wait_for(lock, std::chrono::milliseconds(timeinmilisecond), [&] {return !autoclickerenabled; });
             }
         }
         break;
@@ -1386,9 +1400,10 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
         {
             while (autoclickerenabled && masterswitch)
             {
+                std::unique_lock<std::mutex> lock(mtx);
                 SetCursorPos(dx, dy);
                 mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, NULL, NULL);
-                std::this_thread::sleep_for(std::chrono::milliseconds(holdinmilisec));
+                convar.wait_for(lock, std::chrono::milliseconds(holdinmilisec), [&] {return !autoclickerenabled; });
                 mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, NULL, NULL);
                 //std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
                 if (!infinite && tempint > 0)
@@ -1405,15 +1420,16 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
                     
                     SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+                convar.wait_for(lock, std::chrono::milliseconds(timeinmilisecond), [&] {return !autoclickerenabled; });
             }
         }
         else
         {
             while (autoclickerenabled && masterswitch)
             {
+                std::unique_lock<std::mutex> lock(mtx);
                 mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, NULL, NULL);
-                std::this_thread::sleep_for(std::chrono::milliseconds(holdinmilisec));
+                convar.wait_for(lock, std::chrono::milliseconds(holdinmilisec), [&] {return !autoclickerenabled; });
                 mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, NULL, NULL);
                 std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
                 if (!infinite && tempint > 0)
@@ -1432,7 +1448,7 @@ void autoclickfunc(int index,  uint64_t timeinmilisecond, uint64_t holdinmilisec
                     
                     SendMessage(wndhwnd, WM_COMMAND, ID_STOPBUTTON, NULL);
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(timeinmilisecond));
+                convar.wait_for(lock, std::chrono::milliseconds(timeinmilisecond), [&] {return !autoclickerenabled; });
             }
         }
     }
